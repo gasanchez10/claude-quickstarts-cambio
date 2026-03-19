@@ -46,6 +46,15 @@ class MessageSend(BaseModel):
     content: str = Field(..., min_length=1)
 
 
+class RunWaitResponse(BaseModel):
+    """Response from POST /sessions/{id}/run-wait."""
+
+    status: str = Field(..., description="Always 'ok' on 200")
+    message_count: int = Field(..., description="Number of messages in the conversation after the run")
+    persisted: bool = Field(..., description="True if at least one assistant turn was saved")
+    error: str | None = Field(None, description="Set when run finished without a model response (e.g. API error)")
+
+
 class VncInfo(BaseModel):
     """VNC / noVNC connection info."""
 

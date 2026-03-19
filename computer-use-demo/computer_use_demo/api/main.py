@@ -16,7 +16,7 @@ from computer_use_demo.loop import APIProvider
 
 from .agent_runner import RunConfig, StreamQueue, run_agent_safe
 from .database import engine
-from .schemas import MessageSend, SessionCreate, SessionResponse, VncInfo
+from .schemas import MessageSend, RunWaitResponse, SessionCreate, SessionResponse, VncInfo
 from .session_store import (
     create_session,
     delete_session,
@@ -28,7 +28,8 @@ from .session_store import (
 
 app = FastAPI(
     title="Computer Use Agent API",
-    description="Session management and real-time agent progress for the computer use demo",
+    description="Session management, SSE progress streaming, and VNC info for the computer use demo. "
+    "Sessions and chat history are persisted in SQLite; only one agent run at a time (409 when busy).",
     version="1.0.0",
 )
 
@@ -55,7 +56,7 @@ def _vnc_base_url(request: Request) -> str:
 # ----- Sessions -----
 
 
-@app.post("/sessions", response_model=SessionResponse)
+@app.post("/sessions", response_model=SessionResponse, tags=["Sessions"])
 def api_create_session(body: SessionCreate) -> SessionResponse:
     """Create a new agent session with optional config."""
     config: dict[str, Any] = {
@@ -82,7 +83,7 @@ def api_create_session(body: SessionCreate) -> SessionResponse:
     )
 
 
-@app.get("/sessions", response_model=list[SessionResponse])
+@app.get("/sessions", response_model=list[SessionResponse], tags=["Sessions"])
 def api_list_sessions() -> list[SessionResponse]:
     """List all sessions."""
     return [
@@ -97,7 +98,7 @@ def api_list_sessions() -> list[SessionResponse]:
     ]
 
 
-@app.get("/sessions/{session_id}", response_model=SessionResponse)
+@app.get("/sessions/{session_id}", response_model=SessionResponse, tags=["Sessions"])
 def api_get_session(session_id: str) -> SessionResponse:
     """Get one session by id."""
     sess = get_session(session_id)
@@ -112,7 +113,7 @@ def api_get_session(session_id: str) -> SessionResponse:
     )
 
 
-@app.delete("/sessions/{session_id}", status_code=204)
+@app.delete("/sessions/{session_id}", status_code=204, tags=["Sessions"])
 def api_delete_session(session_id: str) -> None:
     """Delete a session and its chat history."""
     if not delete_session(session_id):
@@ -122,7 +123,7 @@ def api_delete_session(session_id: str) -> None:
 # ----- Messages (chat history) -----
 
 
-@app.get("/sessions/{session_id}/messages")
+@app.get("/sessions/{session_id}/messages", tags=["Chat"])
 def api_get_messages(session_id: str) -> list[dict[str, Any]]:
     """Get full message list for a session (for display)."""
     if get_session(session_id) is None:
@@ -175,11 +176,16 @@ def _run_config(session_id: str) -> tuple[dict[str, Any], RunConfig]:
     return (sess, config)
 
 
-@app.post("/sessions/{session_id}/run-wait")
-async def api_run_session_wait(session_id: str, body: MessageSend):
+@app.post(
+    "/sessions/{session_id}/run-wait",
+    response_model=RunWaitResponse,
+    tags=["Chat"],
+    summary="Run agent (blocking)",
+)
+async def api_run_session_wait(session_id: str, body: MessageSend) -> RunWaitResponse:
     """
     Run the agent and wait for completion (no streaming). Use this if the
-    streaming /run endpoint never delivers events in your environment.
+    streaming **run** endpoint never delivers events in your environment.
     May take 1–3 minutes. Returns when the run finishes or fails.
     """
     _, config = _run_config(session_id)
@@ -189,23 +195,30 @@ async def api_run_session_wait(session_id: str, body: MessageSend):
         if "Another session is running" in err:
             raise HTTPException(status_code=409, detail=err)
         raise HTTPException(status_code=500, detail=err)
-    return {
-        "status": "ok",
-        "message_count": len(messages) if messages else 0,
-        "persisted": persisted,
-        "error": api_error,
-    }
+    return RunWaitResponse(
+        status="ok",
+        message_count=len(messages) if messages else 0,
+        persisted=persisted,
+        error=api_error,
+    )
 
 
-@app.post("/sessions/{session_id}/run")
+@app.post(
+    "/sessions/{session_id}/run",
+    tags=["Chat"],
+    summary="Run agent (SSE stream)",
+)
 def api_run_session(
     session_id: str,
     body: MessageSend,
     request: Request,
 ):
     """
-    Send a user message and run the agent. Returns an SSE stream of progress events.
-    If you see no events in the browser, use POST /sessions/{id}/run-wait instead.
+    Send a user message and run the agent. Returns an **SSE** stream of progress events.
+
+    **Events:** `started`, `content` (text/thinking/tool_use), `tool_result`, `api_response`, `error`, `ping` (keepalive), `done`.
+
+    If the client never receives events (e.g. buffered proxy), use **run-wait** instead.
     """
     _, config = _run_config(session_id)
     stream = StreamQueue()
@@ -254,7 +267,7 @@ def api_run_session(
 # ----- VNC -----
 
 
-@app.get("/vnc", response_model=VncInfo)
+@app.get("/vnc", response_model=VncInfo, tags=["VNC"])
 def api_vnc_info(request: Request) -> VncInfo:
     """Return the noVNC URL for connecting to the virtual machine."""
     base = _vnc_base_url(request)
@@ -267,7 +280,7 @@ def api_vnc_info(request: Request) -> VncInfo:
 # ----- Health -----
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"])
 def health() -> dict[str, str]:
     """Health check for deployments."""
     return {"status": "ok"}
@@ -281,7 +294,8 @@ def serve_frontend() -> HTMLResponse:
     """Serve the demo frontend if index exists."""
     path = os.environ.get("COMPUTER_USE_FRONTEND", "")
     if path and os.path.isfile(path):
-        return HTMLResponse(content=open(path).read())
+        with open(path, encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
     # Minimal fallback
     return HTMLResponse(
         content="""<!DOCTYPE html><html><head><title>Computer Use API</title></head><body>

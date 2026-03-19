@@ -8,10 +8,12 @@
 
 This repo provides:
 
-- **FastAPI backend** (default): session API, SQLite chat history, one run at a time, no race conditions. Served with a simple HTML/JS frontend. See [REQUIREMENTS_VALIDATION.md](REQUIREMENTS_VALIDATION.md) for a full check against the design requirements.
+- **FastAPI backend** (default): session API, SQLite chat history, SSE progress streaming, one run at a time, no race conditions. Served with a simple HTML/JS frontend. See [REQUIREMENTS_VALIDATION.md](REQUIREMENTS_VALIDATION.md) and [EVALUATION.md](EVALUATION.md) for requirements check and grading.
 - **Streamlit app** (legacy): set `USE_FASTAPI=0` to use the Streamlit UI instead.
 - **Docker** image and Compose file for running the agent and desktop (Xvfb, noVNC) in a container.
 - **Computer use agent loop** and tools (Claude API, Bedrock, or Vertex).
+
+**Architecture:** One process runs the FastAPI app and the computer-use agent loop. Sessions and messages are stored in SQLite. A single lock ensures only one agent run at a time (single shared desktop); run requests for other sessions receive 409 until the current run finishes. The frontend uses `run-wait` by default (blocking JSON response); optional `run` endpoint streams progress via SSE.
 
 ---
 
@@ -59,11 +61,13 @@ Use the same ports; set `API_PROVIDER=bedrock` or `API_PROVIDER=vertex` and pass
 | Area | Endpoints |
 |------|-----------|
 | **Sessions** | `POST /sessions` create, `GET /sessions` list, `GET /sessions/{id}` get, `DELETE /sessions/{id}` delete |
-| **Chat** | `GET /sessions/{id}/messages` history. `POST /sessions/{id}/run-wait` body `{"content": "..."}` — runs agent, returns when done (default in UI). `POST /sessions/{id}/run` — SSE stream (use run-wait if SSE is buffered). |
+| **Chat** | `GET /sessions/{id}/messages` history. `POST /sessions/{id}/run-wait` body `{"content": "..."}` — runs agent, returns JSON when done (default in UI). `POST /sessions/{id}/run` — **SSE stream** (events below). Use run-wait if SSE is buffered. |
 | **VNC** | `GET /vnc` noVNC URL |
 | **Health** | `GET /health` |
 
-**Concurrency:** Create, list, get, delete sessions and get messages can run concurrently. Only one agent run is allowed at a time (single shared desktop); a second run returns **409** with a message that another session is running. No simultaneous runs; no race on desktop or chat state.
+**SSE events** (`POST /sessions/{id}/run`): `started` → `content` (text/thinking/tool_use), `tool_result`, `api_response` → `error` (on failure) or `done`. Optional `ping` every 30s if no activity. See `/docs` for full schema.
+
+**Concurrency:** Create, list, get, delete sessions and get messages can run concurrently. Only one agent run is allowed at a time (single shared desktop); a second run returns **409**. No race on desktop or chat state.
 
 **API key:** Set `ANTHROPIC_API_KEY` when starting the container (e.g. `ANTHROPIC_API_KEY=sk-... docker compose up`). Required for the Run button; can also be set per session in create body.
 
