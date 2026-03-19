@@ -14,6 +14,7 @@ RUN apt-get update && \
     imagemagick \
     sudo \
     mutter \
+    libpci3 \
     x11vnc \
     # Python/pyenv reqs
     build-essential \
@@ -94,6 +95,10 @@ RUN python -m pip install -r $HOME/computer_use_demo/requirements.txt
 COPY --chown=$USERNAME:$USERNAME image/ $HOME
 COPY --chown=$USERNAME:$USERNAME computer_use_demo/ $HOME/computer_use_demo/
 
+# FastAPI frontend (used when ENTRYPOINT is entrypoint_fastapi.sh)
+COPY --chown=$USERNAME:$USERNAME frontend/ $HOME/frontend/
+ENV COMPUTER_USE_FRONTEND=$HOME/frontend/index.html
+
 ARG DISPLAY_NUM=1
 ARG HEIGHT=768
 ARG WIDTH=1024
@@ -101,4 +106,6 @@ ENV DISPLAY_NUM=$DISPLAY_NUM
 ENV HEIGHT=$HEIGHT
 ENV WIDTH=$WIDTH
 
+# Use FastAPI backend by default (set USE_STREAMLIT=1 to use legacy Streamlit)
+ENV USE_FASTAPI=1
 ENTRYPOINT [ "./entrypoint.sh" ]

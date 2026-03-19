@@ -27,10 +27,14 @@ wait_for_xvfb() {
     return 0
 }
 
-# Check if Xvfb is already running
+# If lock exists but display is not actually ready, treat as stale and start Xvfb
 if check_xvfb_running; then
-    echo "Xvfb is already running on display ${DISPLAY}"
-    exit 0
+    if wait_for_xvfb; then
+        echo "Xvfb is already running on display ${DISPLAY}"
+        exit 0
+    fi
+    echo "Stale Xvfb lock found; removing and starting fresh"
+    rm -f /tmp/.X${DISPLAY_NUM}-lock
 fi
 
 # Start Xvfb
@@ -43,6 +47,6 @@ if wait_for_xvfb; then
     echo "Xvfb PID: $XVFB_PID"
 else
     echo "Xvfb failed to start"
-    kill $XVFB_PID
+    kill $XVFB_PID 2>/dev/null || true
     exit 1
 fi

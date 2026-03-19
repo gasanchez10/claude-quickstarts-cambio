@@ -1,0 +1,32 @@
+# Local development and deployment for Computer Use Demo (FastAPI backend).
+# Build: docker compose build
+# Run:   ANTHROPIC_API_KEY=sk-... docker compose up   (required for Run in the UI)
+# API:   http://localhost:8888   Docs: http://localhost:8888/docs
+# VNC:   http://localhost:6080
+
+services:
+  computer-use:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      USE_FASTAPI: "1"
+      HOST_API_PORT: "8888"
+      COMPUTER_USE_FRONTEND: /home/computeruse/frontend/index.html
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Use path under mounted computer_use_demo so container user can write (volume /home/computeruse/data is often root-owned)
+      COMPUTER_USE_DB_PATH: /home/computeruse/computer_use_demo/data/sessions.db
+    ports:
+      - "8888:8000"   # FastAPI (use http://localhost:8888)
+      - "6080:6080"   # noVNC
+      - "8080:8080"   # Optional static server
+    volumes:
+      - ./computer_use_demo:/home/computeruse/computer_use_demo
+      - ./frontend:/home/computeruse/frontend
+      - computer_use_data:/home/computeruse/data
+    # Optional: use a different display for a second instance (not required for single session)
+    # env:
+    #   DISPLAY_NUM: "2"
+
+volumes:
+  computer_use_data:
