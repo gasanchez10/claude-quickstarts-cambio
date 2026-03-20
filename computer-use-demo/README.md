@@ -11,9 +11,71 @@ This repo provides:
 - **FastAPI backend** (default): session API, SQLite chat history, SSE progress streaming, one run at a time, no race conditions. Served with a simple HTML/JS frontend. See [REQUIREMENTS_VALIDATION.md](REQUIREMENTS_VALIDATION.md) and [EVALUATION.md](EVALUATION.md) for requirements check and grading.
 - **Streamlit app** (legacy): set `USE_FASTAPI=0` to use the Streamlit UI instead.
 - **Docker** image and Compose file for running the agent and desktop (Xvfb, noVNC) in a container.
-- **Computer use agent loop** and tools (Claude API, Bedrock, or Vertex).
+- **Computer use agent loop** and tools (Claude API, Bedrock, or Vertex), reusing the [Anthropic computer-use-demo stack](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo).
 
-**Architecture:** One process runs the FastAPI app and the computer-use agent loop. Sessions and messages are stored in SQLite. A single lock ensures only one agent run at a time (single shared desktop); run requests for other sessions receive 409 until the current run finishes. The frontend uses `run-wait` by default (blocking JSON response); optional `run` endpoint streams progress via SSE.
+---
+
+## Demo video
+
+Walkthrough of the FastAPI + frontend + VNC flow: **[Demo recording (Google Drive)](https://drive.google.com/file/d/101GZ0QyjL5PQnEOP_Fhv5Zrit8iBN5xw/view?usp=sharing)**
+
+---
+
+## Solution architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Browser (HTML/JS demo)                                                  │
+│  Sessions · Chat · Run (run-wait) · VNC iframe / new tab                 │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │ HTTP (REST + optional SSE)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│  FastAPI (computer_use_demo.api)                                         │
+│  • Sessions CRUD → session_store + SQLite                                │
+│  • GET /messages, POST /run-wait, POST /run (SSE)                        │
+│  • GET /vnc → noVNC URL                                                  │
+│  • 409 if another session is already running                             │
+└───────────────────────────────┬─────────────────────────────────────────┘
+                                │
+         ┌──────────────────────┼──────────────────────┐
+         ▼                      ▼                      ▼
+┌─────────────────┐   ┌─────────────────┐   ┌─────────────────────────────┐
+│ SQLite          │   │ agent_runner    │   │ Xvfb + mutter + x11vnc      │
+│ sessions,       │   │ _agent_lock     │   │ + noVNC :6080               │
+│ messages        │   │ sampling_loop   │   │ (single shared desktop)     │
+└─────────────────┘   └────────┬────────┘   └─────────────────────────────┘
+                             │
+                             ▼
+                    computer_use_demo.loop
+                    computer_use_demo.tools
+                    (same stack as upstream demo)
+```
+
+| Layer | Role |
+|-------|------|
+| **Frontend** | Calls REST APIs; uses `run-wait` by default; shows VNC in iframe; avoids duplicate session rows (request generation + dedupe); refreshes VNC after runs and when returning to a backgrounded tab. |
+| **FastAPI** | Validates sessions, enforces one run at a time (DB `running` + lock), persists chat after successful model turns. |
+| **SQLite** | Durable `sessions` and `messages` tables; optional `COMPUTER_USE_DB_PATH`. |
+| **Agent** | Wraps upstream `sampling_loop` with progress callbacks → SSE queue or ignored for run-wait. |
+| **Desktop** | One VM display per container; all sessions share it; VNC is best-effort in background browser tabs (reload on focus / after run). |
+
+---
+
+## Design requirements (how we address each)
+
+**Goal:** *Design a scalable backend for computer use agent session management* (building on the [Anthropic computer-use-demo](https://github.com/anthropics/anthropic-quickstarts/tree/main/computer-use-demo)).
+
+| # | Requirement | How we address it |
+|---|-------------|-------------------|
+| **1** | **Reuse the existing computer use agent stack** | Same `Dockerfile` / desktop startup, `computer_use_demo.loop.sampling_loop`, `computer_use_demo.tools`, providers (Anthropic / Bedrock / Vertex). FastAPI is a new control plane, not a rewrite of the agent. |
+| **2a** | **Session creation and management APIs** | `POST /sessions`, `GET /sessions`, `GET /sessions/{id}`, `DELETE /sessions/{id}` with Pydantic models and OpenAPI tags. |
+| **2b** | **Real-time progress (WebSocket, SSE, or choice)** | **SSE:** `POST /sessions/{id}/run` (`EventSourceResponse`) with `started`, `content`, `tool_result`, `api_response`, `error`, `ping`, `done`. **Blocking alternative:** `POST /sessions/{id}/run-wait` returns JSON when the run finishes (default in the UI when proxies buffer SSE). |
+| **2c** | **VNC connection to virtual machine** | Container runs Xvfb, mutter, x11vnc, noVNC on port **6080**. `GET /vnc` returns the noVNC URL; the demo page embeds it and links “Open in new tab”. |
+| **2d** | **Database persistence for chat history** | SQLite via SQLAlchemy (`DBSession`, `DBMessage`); full conversation persisted after a successful assistant turn; `GET /sessions/{id}/messages`. |
+| **2e** | **Concurrent session requests without race conditions** | Create/list/get/delete/messages are concurrent and isolated per DB transaction. Only one **run** at a time: global `asyncio.Lock` + `sessions.status = running` + **409** for a second run. Frontend ignores stale `loadChat` / `loadSessions` responses and dedupes session ids. |
+| **3** | **Docker for local dev and deployment** | `docker-compose.yml` (API on host **8888**, VNC **6080**), env for API key and DB path; same image works for remote deploy. |
+| **4** | **Simple HTML/JS frontend** | Single `frontend/index.html`: session list, chat, Run, VNC panel, progress log, API base URL. |
 
 ---
 
@@ -31,6 +93,8 @@ ANTHROPIC_API_KEY=sk-ant-api03-... docker compose up
 - **VNC (desktop):** http://localhost:6080  
 
 Create a session, type a message, click **Run**. The agent runs on the shared desktop; only one run at a time (a second run returns 409). Chat history is per session and persisted in SQLite.
+
+**UX note:** If the VNC iframe looks frozen after you switch to another browser tab for a while, use **Reload VNC** or open VNC in a new tab—browsers throttle background tabs.
 
 ---
 

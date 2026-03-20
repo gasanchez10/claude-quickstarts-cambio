@@ -165,8 +165,9 @@
     <section class="panel" id="vnc-panel">
       <h2>VNC – Desktop (agent actions appear here)</h2>
       <p class="muted" style="margin:0 0 0.5rem 0; font-size:0.85rem;">One shared desktop for all sessions. Only one run at a time. Chat history is per session.</p>
+      <p class="muted" style="margin:0 0 0.5rem 0; font-size:0.75rem;">If VNC looks frozen after switching browser tabs, click <strong>Reload VNC</strong> or open in a new tab—browsers often throttle background tabs.</p>
       <div class="body">
-        <iframe id="vncFrame" title="Desktop (VNC)"></iframe>
+        <iframe id="vncFrame" title="Desktop (VNC)" allow="fullscreen"></iframe>
       </div>
       <div class="actions">
         <button type="button" id="btnVnc">Reload VNC</button>
@@ -214,17 +215,23 @@
       }
 
       let currentSessionId = null;
+      let _sessionsLoadGeneration = 0;
 
       async function loadSessions() {
+        const gen = ++_sessionsLoadGeneration;
         const list = document.getElementById("session-list");
         list.innerHTML = "";
         try {
           const sessions = await api("/sessions");
+          if (gen !== _sessionsLoadGeneration) return;
           if (!Array.isArray(sessions)) {
             list.innerHTML = '<li style="color:var(--muted)">No sessions yet. Click "New session".</li>';
             return;
           }
+          const seen = new Set();
           for (const s of sessions) {
+            if (!s || !s.id || seen.has(s.id)) continue;
+            seen.add(s.id);
             const li = document.createElement("li");
             li.className = s.id === currentSessionId ? "active" : "";
             li.style.display = "flex";
@@ -243,6 +250,7 @@
             list.appendChild(li);
           }
         } catch (e) {
+          if (gen !== _sessionsLoadGeneration) return;
           list.innerHTML = '<li style="color:var(--error)">Cannot reach API at ' + escapeHtml(apiBase()) + '. Check the URL and that the server is running.</li>';
           console.error("API error:", e);
         }
@@ -332,6 +340,9 @@
       }
 
       document.getElementById("btnCreate").onclick = async function () {
+        const btnCreate = document.getElementById("btnCreate");
+        if (btnCreate.disabled) return;
+        btnCreate.disabled = true;
         try {
           const res = await api("/sessions", {
             method: "POST",
@@ -355,6 +366,8 @@
         } catch (e) {
           setStatus("Create session: " + e.message, "error");
           loadSessions();
+        } finally {
+          btnCreate.disabled = false;
         }
       };
 
@@ -419,6 +432,7 @@
             logSse("error", msg);
           }
           loadSessions();
+          reloadVncFrame();
         } catch (e) {
           const msg = e.name === "AbortError" ? "Request timed out (3 min)" : (e.message || "Request failed");
           setStatus(msg, "error");
@@ -440,25 +454,46 @@
         }
       });
 
+      function getVncUrl(bustCache) {
+        const u = new URL(window.location.origin);
+        let q = "resize=scale&autoconnect=1&view_only=1&reconnect=1&reconnect_delay=2000";
+        if (bustCache) q += "&_=" + Date.now();
+        return u.protocol + "//" + u.hostname + ":6080/vnc.html?" + q;
+      }
+
+      function reloadVncFrame() {
+        const f = document.getElementById("vncFrame");
+        f.src = getVncUrl(true);
+        f.title = "Desktop (VNC) – agent actions appear here";
+      }
+
       document.getElementById("btnVnc").onclick = function () {
-        document.getElementById("vncFrame").src = getVncUrl();
+        reloadVncFrame();
       };
-      document.getElementById("vncLink").href = getVncUrl();
+      document.getElementById("vncLink").href = getVncUrl(false);
+      document.getElementById("vncLink").onclick = function () {
+        this.href = getVncUrl(true);
+      };
 
       // Set API base to current origin so the correct port (e.g. 8888) is used
       document.getElementById("apiBase").value = window.location.origin;
 
-      function getVncUrl() {
-        const u = new URL(window.location.origin);
-        return u.protocol + "//" + u.hostname + ":6080/vnc.html?resize=scale&autoconnect=1&view_only=1&reconnect=1&reconnect_delay=2000";
-      }
-
       // Load VNC iframe: same host, port 6080 (desktop view; agent actions appear here)
       (function () {
-        const vncUrl = getVncUrl();
-        document.getElementById("vncFrame").src = vncUrl;
-        document.getElementById("vncFrame").title = "Desktop (VNC) – agent actions appear here";
+        const f = document.getElementById("vncFrame");
+        f.src = getVncUrl(false);
+        f.title = "Desktop (VNC) – agent actions appear here";
       })();
+
+      // Browsers throttle background tabs; refresh noVNC when user returns after being away
+      var _vncHiddenAt = 0;
+      document.addEventListener("visibilitychange", function () {
+        if (document.visibilityState === "hidden") {
+          _vncHiddenAt = Date.now();
+        } else if (document.visibilityState === "visible" && _vncHiddenAt && Date.now() - _vncHiddenAt > 1500) {
+          setTimeout(reloadVncFrame, 200);
+        }
+      });
 
       loadSessions();
     })();
